@@ -11,8 +11,20 @@ def _truncate(s: str, n: int) -> str:
 class SlackAdapter:
     name = "slack"
 
-    def __init__(self, bot_token: str, default_channel: str) -> None:
+    def __init__(
+        self,
+        bot_token: str,
+        default_channel: str,
+        install_id: str = "",
+    ) -> None:
+        # default_channel can be a channel ID (C...) or a user ID (U...) for
+        # direct DMs — chat.postMessage accepts either with `im:write` scope.
+        # install_id is set in dispatcher mode and gets embedded into button
+        # values so the hosted dispatcher can route callbacks. Empty string
+        # means self-hosted mode (the local /v1/slack/interactive parses the
+        # 2-part legacy format).
         self.channel = default_channel
+        self.install_id = install_id
         self._client = httpx.AsyncClient(
             base_url="https://slack.com/api",
             headers={"Authorization": f"Bearer {bot_token}"},
@@ -75,6 +87,12 @@ class SlackAdapter:
             f"*Why:* {reason}\n"
             f"```\n{shown}\n```"
         )
+        if self.install_id:
+            approve_value = f"{self.install_id}:{approval_id}:approve"
+            reject_value = f"{self.install_id}:{approval_id}:reject"
+        else:
+            approve_value = f"{approval_id}:approve"
+            reject_value = f"{approval_id}:reject"
         blocks = [
             {"type": "section", "text": {"type": "mrkdwn", "text": header}},
             {
@@ -84,14 +102,14 @@ class SlackAdapter:
                         "type": "button",
                         "text": {"type": "plain_text", "text": "✅ Approve"},
                         "style": "primary",
-                        "value": f"{approval_id}:approve",
+                        "value": approve_value,
                         "action_id": "approval_approve",
                     },
                     {
                         "type": "button",
                         "text": {"type": "plain_text", "text": "❌ Reject"},
                         "style": "danger",
-                        "value": f"{approval_id}:reject",
+                        "value": reject_value,
                         "action_id": "approval_reject",
                     },
                 ],

@@ -1,0 +1,32 @@
+# fly.toml — sample config for deploying AgentRelay to fly.io.
+# After `fly launch --no-deploy`, you'll edit `app =` to your unique name,
+# then `fly deploy`. The hostname `<app>.fly.dev` becomes your stable
+# `public_url` for Slack — no more ephemeral tunnel URLs.
+
+app = "agentrelay-CHANGE-ME"
+primary_region = "iad"  # pick the region nearest you
+
+[build]
+
+[env]
+  AGENTRELAY_PORT = "8000"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = "off"   # we want the server always reachable
+  auto_start_machines = true
+  min_machines_running = 1
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+
+# Mount a config volume so config.toml + state survives restarts.
+# After `fly volumes create agentrelay_data --size 1`, uncomment:
+#
+# [[mounts]]
+#   source = "agentrelay_data"
+#   destination = "/data"
+#
+# Then set AGENTRELAY_CONFIG=/data/config.toml in [env].

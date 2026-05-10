@@ -2,7 +2,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import re
 import subprocess
 import sys
 import time
@@ -11,7 +10,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Form, Header, HTTPException, Request
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import JSONResponse
 
 from .adapters.base import MessagingAdapter
 from .risk import Risk, classify_tool_call
@@ -24,7 +23,13 @@ config: dict = {}
 
 approval_timeout_seconds = 600
 stall_threshold_seconds = 240
-sms_fallback_seconds = 90
+
+# Dispatcher mode is enabled by setting AGENTRELAY_MODE=dispatcher in the env
+# before booting the server. The CLI's `agentrelay run` does this for you.
+# In dispatcher mode we load Slack creds from the OS keychain (via login)
+# instead of from config.toml, and we open a websocket to the hosted
+# dispatcher to receive button-click callbacks.
+_dispatcher_client = None  # set during lifespan if dispatcher mode is on
 
 
 def load_config() -> dict:
@@ -37,13 +42,47 @@ def load_config() -> dict:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global config, approval_timeout_seconds, stall_threshold_seconds, sms_fallback_seconds
+    global config, approval_timeout_seconds, stall_threshold_seconds, _dispatcher_client
     config = load_config()
-    approval_timeout_seconds = int(config.get("approval_timeout_seconds", approval_timeout_seconds))
-    stall_threshold_seconds = int(config.get("stall_threshold_seconds", stall_threshold_seconds))
-    sms_fallback_seconds = int(config.get("sms_fallback_seconds", sms_fallback_seconds))
+    approval_timeout_seconds = int(
+        config.get("approval_timeout_seconds", approval_timeout_seconds)
+    )
+    stall_threshold_seconds = int(
+        config.get("stall_threshold_seconds", stall_threshold_seconds)
+    )
 
-    if "slack" in config:
+    mode = os.environ.get("AGENTRELAY_MODE", "self-hosted")
+
+    if mode == "dispatcher":
+        # Load creds from OS keychain populated by `agentrelay login`. DM the
+        # installer directly (channel = their Slack user id) and embed the
+        # install_id into button values so the dispatcher can route clicks.
+        from .adapters.slack import SlackAdapter
+        from .dispatcher_client import DispatcherClient
+        from .keychain import load as load_creds
+
+        creds = load_creds()
+        if creds is None:
+            raise RuntimeError(
+                "AGENTRELAY_MODE=dispatcher but no credentials found. "
+                "Run `agentrelay login` first."
+            )
+        adapters.append(
+            SlackAdapter(
+                bot_token=creds.bot_token,
+                default_channel=creds.slack_user_id,
+                install_id=creds.install_id,
+            )
+        )
+        _dispatcher_client = DispatcherClient(
+            dispatcher_url=creds.dispatcher_url,
+            install_id=creds.install_id,
+            install_secret=creds.install_secret,
+            store=store,
+        )
+        _dispatcher_client.start()
+    elif "slack" in config:
+        # Self-hosted mode: load Slack creds from config.toml as before.
         from .adapters.slack import SlackAdapter
 
         adapters.append(
@@ -52,23 +91,14 @@ async def lifespan(app: FastAPI):
                 default_channel=config["slack"]["channel"],
             )
         )
-    if "sms" in config:
-        from .adapters.sms import SMSAdapter
-
-        adapters.append(
-            SMSAdapter(
-                account_sid=config["sms"]["account_sid"],
-                auth_token=config["sms"]["auth_token"],
-                from_number=config["sms"]["from_number"],
-                to_number=config["sms"]["to_number"],
-            )
-        )
 
     stall_task = asyncio.create_task(stall_watcher())
     try:
         yield
     finally:
         stall_task.cancel()
+        if _dispatcher_client is not None:
+            await _dispatcher_client.stop()
 
 
 app = FastAPI(lifespan=lifespan, title="AgentRelay")
@@ -82,10 +112,8 @@ def check_token(token: str | None) -> None:
         raise HTTPException(status_code=401, detail="invalid token")
 
 
-async def broadcast(method: str, *args, only: set[str] | None = None, **kwargs) -> None:
+async def broadcast(method: str, *args, **kwargs) -> None:
     for a in adapters:
-        if only and a.name not in only:
-            continue
         try:
             await getattr(a, method)(*args, **kwargs)
         except Exception as e:
@@ -110,7 +138,9 @@ async def healthz() -> dict:
     return {
         "ok": True,
         "sessions": len(store.sessions),
-        "pending_approvals": sum(1 for a in store.approvals.values() if not a.future.done()),
+        "pending_approvals": sum(
+            1 for a in store.approvals.values() if not a.future.done()
+        ),
         "adapters": [a.name for a in adapters],
     }
 
@@ -127,9 +157,25 @@ async def request_approval(
     tool_input = body.get("tool_input", {})
 
     sess = store.get_session(session_id) if session_id else None
+    if not sess and session_id:
+        # First hook call for a session we didn't spawn (VS Code extension or
+        # ad-hoc `claude` invocation). Auto-create a session keyed on Claude
+        # Code's own session_id, then send the "session started" DM so all
+        # subsequent messages thread under it.
+        from .sessions import Session, SessionState
+
+        cwd = body.get("cwd") or os.getcwd()
+        sess = Session(
+            id=session_id,
+            task="(Claude Code session)",
+            project_dir=cwd,
+            state=SessionState.RUNNING,
+        )
+        store.sessions[session_id] = sess
+        await announce_session_start(sess)
     if not sess:
-        # Hook fired for an unknown session — fail open so we never wedge claude.
-        return {"decision": "approve", "reason": "unknown session, auto-approve"}
+        # Truly no session id at all — fail open so we never wedge claude.
+        return {"decision": "approve", "reason": "no session id, auto-approve"}
 
     store.touch(session_id)
     classification = classify_tool_call(tool_name, tool_input)
@@ -155,12 +201,11 @@ async def request_approval(
         classification.risk.value,
         classification.reason,
         thread_ts=sess.slack_thread_ts,
-        only={"slack"},
     )
 
     try:
         decision = await asyncio.wait_for(
-            _wait_for_approval(approval), timeout=approval_timeout_seconds
+            approval.future, timeout=approval_timeout_seconds
         )
     except asyncio.TimeoutError:
         return {"decision": "block", "reason": "approval timeout"}
@@ -169,32 +214,6 @@ async def request_approval(
     if decision == ApprovalDecision.APPROVE:
         return {"decision": "approve", "reason": "user approved"}
     return {"decision": "block", "reason": "user rejected"}
-
-
-async def _wait_for_approval(approval) -> ApprovalDecision:
-    """Wait for user response. After sms_fallback_seconds, also page SMS."""
-    try:
-        return await asyncio.wait_for(
-            asyncio.shield(approval.future), timeout=sms_fallback_seconds
-        )
-    except asyncio.TimeoutError:
-        if not approval.notified_sms:
-            approval.notified_sms = True
-            sess = store.get_session(approval.session_id)
-            project = Path(sess.project_dir).name if sess else "?"
-            task = sess.task if sess else "(unknown task)"
-            await broadcast(
-                "send_approval_request",
-                approval.id,
-                approval.session_id,
-                project,
-                task,
-                approval.command,
-                approval.risk,
-                approval.reason,
-                only={"sms"},
-            )
-        return await approval.future
 
 
 @app.post("/v1/start")
@@ -346,30 +365,3 @@ async def slack_slash(text: str = Form("")) -> JSONResponse:
     asyncio.create_task(reap_session(sess.id))
     asyncio.create_task(announce_session_start(sess))
     return JSONResponse({"text": f":rocket: Started session `{sess.id}` — _{task[:80]}_"})
-
-
-SMS_REPLY_RE = re.compile(r"^([AaRr])\s+([A-Za-z0-9]+)\s*$")
-TWIML_OK = "<?xml version='1.0' encoding='UTF-8'?><Response/>"
-
-
-@app.post("/v1/sms/incoming", response_class=PlainTextResponse)
-async def sms_incoming(Body: str = Form(""), From: str = Form("")) -> str:
-    body = Body.strip()
-    m = SMS_REPLY_RE.match(body)
-    if not m:
-        return TWIML_OK
-    letter = m.group(1).upper()
-    approval_id = m.group(2)
-    decision = ApprovalDecision.APPROVE if letter == "A" else ApprovalDecision.REJECT
-    store.resolve_approval(approval_id, decision)
-    return TWIML_OK
-
-
-def main() -> None:
-    import uvicorn
-
-    uvicorn.run(
-        "agentrelay.server:app",
-        host=os.environ.get("AGENTRELAY_HOST", "0.0.0.0"),
-        port=int(os.environ.get("AGENTRELAY_PORT", "8000")),
-    )

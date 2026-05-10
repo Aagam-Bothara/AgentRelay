@@ -1,18 +1,28 @@
 [project]
 name = "agentrelay"
-version = "0.1.0"
-description = "Async supervision layer for autonomous coding agents — approve risky actions and catch stalls from your phone."
+version = "0.3.0"
+description = "Async supervision for autonomous coding agents — approve risky actions and catch stalls from your phone."
 requires-python = ">=3.11"
+readme = "README.md"
+license = { text = "MIT" }
 dependencies = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.27",
     "httpx>=0.27",
     "python-multipart>=0.0.9",
-    "twilio>=9.0",
+    "typer>=0.12",
+    "rich>=13.7",
+    "pyyaml>=6.0",
+    "pyperclip>=1.8",
+    "keyring>=24.0",
+    "websockets>=13.0",
 ]
 
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
 [project.scripts]
-agentrelay = "agentrelay.server:main"
+agentrelay = "agentrelay.cli:main"
 
 [build-system]
 requires = ["hatchling"]

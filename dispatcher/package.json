@@ -1,0 +1,17 @@
+{
+  "name": "agentrelay-dispatcher",
+  "version": "0.3.0",
+  "description": "Stateless Slack-callback router for AgentRelay. Forwards button clicks to local CLIs via websocket. Never sees command contents.",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240821.1",
+    "typescript": "^5.5.0",
+    "wrangler": "^3.78.0"
+  }
+}

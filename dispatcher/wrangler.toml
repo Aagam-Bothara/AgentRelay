@@ -1,0 +1,25 @@
+name = "agentrelay-dispatcher"
+main = "src/index.ts"
+compatibility_date = "2024-09-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Durable Objects: one per install, holds the websocket and forwards callbacks.
+[[durable_objects.bindings]]
+name = "INSTALL"
+class_name = "Install"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Install"]
+
+# KV namespace: stores OAuth session state (short-lived) and install_id -> DO mapping.
+# Run `wrangler kv:namespace create STATE` and paste the IDs below.
+[[kv_namespaces]]
+binding = "STATE"
+id = "3a49598977c24629bf440ac5ddac6896"
+preview_id = "5a25601bb7394795b8721fcc2359a841"
+
+[vars]
+# Set these via `wrangler secret put SLACK_CLIENT_ID` etc. — do NOT commit real values.
+# SLACK_CLIENT_ID is per-environment and lives in vars; secrets go in `wrangler secret`.
+PUBLIC_URL = "https://agentrelay-dispatcher.mweeb19.workers.dev"

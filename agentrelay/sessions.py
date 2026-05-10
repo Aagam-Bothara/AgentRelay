@@ -30,7 +30,6 @@ class Approval:
     reason: str
     future: asyncio.Future
     created_at: float = field(default_factory=time.time)
-    notified_sms: bool = False
 
 
 @dataclass

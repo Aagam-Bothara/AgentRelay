@@ -8,21 +8,39 @@ You ask Claude Code to "fix the auth tests and open a PR," then walk away to gra
 
 AgentRelay fixes that.
 
-It's a small relay server plus a Claude Code hook that sends risky actions to your phone — Slack with Approve / Reject buttons, or SMS as a fallback. You tap a button. The agent continues. You never had to be at your laptop.
+It's a Claude Code hook plus a tiny relay that sends risky actions to your phone via Slack — with Approve / Reject buttons. You tap a button. The agent continues. You never had to be at your laptop.
 
-That's the whole pitch.
+---
+
+## Install in 3 commands
+
+```bash
+pipx install agentrelay
+agentrelay login          # browser opens → "Add to Slack" → done
+agentrelay run            # starts local server, connects to dispatcher
+```
+
+Then in any project you want supervised:
+
+```bash
+agentrelay wire-hook .
+```
+
+That's it. No tunnel setup. No Slack app to create. No `config.toml` to edit.
+
+> **What `login` does:** opens your browser to AgentRelay's hosted dispatcher, walks you through Slack's "Add to Workspace" page, comes back with a bot token + install secret stored in your OS keychain. Your laptop is now connected to the dispatcher via an outbound websocket — no public URL on your side needed.
 
 ---
 
 ## How a session looks
 
-You DM the relay's Slack app from your phone:
+In Slack, DM the AgentRelay bot from your phone:
 
 ```
 /relay fix the failing auth tests and open a PR
 ```
 
-Claude Code spins up in your project. While it's reading files, running tests, and editing code — all *safe* stuff — you hear nothing. Then it tries `npm install jsonwebtoken`. Your phone buzzes:
+Claude Code spins up in your project. While it's reading files and running tests — all *safe* stuff — you hear nothing. Then it tries `npm install jsonwebtoken`. Your phone buzzes:
 
 > ⚠️ **MEDIUM risk — approve?**
 > *Task:* fix the failing auth tests and open a PR
@@ -34,25 +52,61 @@ Claude Code spins up in your project. While it's reading files, running tests, a
 
 You tap Approve while standing in line at the deli. The agent continues. Ten minutes later: a clean PR, all tests passing, summary in Slack.
 
-If something goes wrong — five failed test runs in a row, a hang, anything weird — AgentRelay notices and pings you. Stuck sessions don't sit silently.
+If something goes wrong — five failed tests in a row, a hang — AgentRelay notices and pings you.
 
 ---
 
 ## How it works
 
 ```
-   Slack / SMS  ←── webhooks ──┐
-                               │
-   You ─/relay ...─→  AgentRelay (FastAPI)
-                               │  ▲
-                               │  │ POST /v1/approval  (blocks)
-                               ▼  │
-                        claude -p "..."  ─PreToolUse hook→  hook.py
+                                ┌────────────────────┐
+                                │ Hosted dispatcher  │
+                                │ (Cloudflare Worker)│
+                                │                    │
+   Slack ──webhooks────────────►│  routes button     │
+                                │  clicks via        │
+                                │  websocket         │
+                                └─────────┬──────────┘
+                                          │ websocket
+                                          ▼
+   Claude Code ─PreToolUse hook→  agentrelay (your laptop)
+                                          │
+                                          ▼
+                                   chat.postMessage
+                                   (your bot token,
+                                   direct to Slack)
 ```
 
-The whole trick: **the hook makes a long-poll HTTP call that doesn't return until you tap a button on your phone.** That single blocking call is what lets a synchronous subprocess wait for an async human three miles away. Everything else — risk classification, message routing, stall detection — is normal web-app code wrapped around that one mechanic.
+**The privacy property:** the dispatcher never sees commands, file paths, or project data. It only sees opaque approval IDs and routes button clicks. Your bot token lives on your laptop. Slack messages go directly from your laptop to Slack — never through the dispatcher.
 
-No bot daemon. No orchestrator. No event store. One process, one hook script, two adapters.
+The whole trick: **the hook makes a long-poll HTTP call that doesn't return until you tap a button on your phone.** That single blocking call is what lets a synchronous subprocess wait for an async human three miles away.
+
+---
+
+## CLI reference
+
+```bash
+agentrelay login                 # Slack OAuth → store creds in keychain
+agentrelay logout                # clear stored creds
+agentrelay run                   # default: dispatcher mode
+agentrelay run --self-hosted     # v0.2-style: config.toml + cloudflared
+agentrelay wire-hook <project>   # add the PreToolUse hook to a project
+agentrelay init                  # [self-hosted] interactive setup wizard
+agentrelay rewire-slack          # [self-hosted] regenerate manifest after tunnel restart
+```
+
+---
+
+## Self-hosting
+
+Don't trust a hosted dispatcher? Want to run everything on your own infrastructure? Both work.
+
+```bash
+agentrelay init                  # wizard creates Slack app + tunnel + config.toml
+agentrelay run --self-hosted     # uses cloudflared instead of dispatcher
+```
+
+In self-hosted mode, you own the Slack app and the tunnel. Nothing leaves your machine except direct Slack API calls. See [config.example.toml](config.example.toml) and [Dockerfile](Dockerfile) / [fly.toml](fly.toml) for production deployment.
 
 ---
 
@@ -60,74 +114,56 @@ No bot daemon. No orchestrator. No event store. One process, one hook script, tw
 
 ```
 agentrelay/
-  server.py          FastAPI — endpoints, stall watcher, session spawn
-  risk.py            command classifier (SAFE / MEDIUM / HIGH / BLOCKED)
-  sessions.py        in-memory session + approval state
+  cli.py               typer CLI: login, logout, run, init, wire-hook, rewire-slack
+  auth.py              Slack OAuth client (browser + poll)
+  keychain.py          OS keychain wrapper (with file fallback)
+  dispatcher_client.py websocket client to the hosted dispatcher
+  wizard.py            self-hosted setup wizard
+  tunnel.py            Cloudflare quick-tunnel wrapper
+  manifest.py          Slack App Manifest generator
+  server.py            FastAPI app: /v1/approval, /v1/start, /v1/slack/*, /healthz
+  risk.py              command classifier (SAFE / MEDIUM / HIGH / BLOCKED)
+  sessions.py          in-memory session + approval state
   adapters/
-    slack.py         Slack Web API + threaded messages
-    sms.py           Twilio SMS + reply parsing
-hook.py              Claude Code PreToolUse hook
-config.example.toml
+    slack.py           Slack Web API + threaded messages
+hook.py                Claude Code PreToolUse hook
+dispatcher/            Cloudflare Worker source — see dispatcher/README.md
 ```
 
-Concurrent sessions stay legible because every Slack message threads under its session's "Started" post, and every SMS includes the task name and session ID.
+Concurrent sessions stay legible because every Slack message threads under its session's "Started" post.
 
 ---
 
-## Quick start
+## Privacy & trust model
 
-```bash
-git clone <this repo>
-cd agentrelay
-pip install -e .
-cp config.example.toml config.toml
-# fill in slack + twilio creds, then:
-agentrelay
-```
+**What the hosted dispatcher sees:** Slack workspace IDs, opaque approval IDs (random hex), button click events, your install_id.
 
-You'll need a public URL for Slack and Twilio webhooks to reach you:
+**What the hosted dispatcher does NOT see:** the command being approved, file paths, project contents, secrets, agent output, your code.
 
-- **Production:** deploy to Fly.io / Railway / Render — anywhere that runs a Python web app.
-- **Development:** `ngrok http 8000` is the fastest path to a working URL.
+Your laptop holds the Slack bot token, generates the approval messages, and posts them directly to Slack. The dispatcher only routes Slack's interactivity webhook callbacks back to you — it's a pure button-click relay.
 
-### Slack (~5 min)
-
-Create a Slack app. Give it two scopes: `chat:write`, `commands`. Then:
-
-- Slash command `/relay` → `https://YOUR-APP/v1/slack/slash`
-- Interactivity URL → `https://YOUR-APP/v1/slack/interactive`
-
-Drop the bot token and channel ID into `config.toml` under `[slack]`.
-
-### Twilio (~10–30 min)
-
-Get a Twilio number. Set its inbound messaging webhook to `https://YOUR-APP/v1/sms/incoming` (POST). Drop your account SID, auth token, and phone numbers into `config.toml` under `[sms]`.
-
-> **Heads up about US SMS.** Twilio in the US requires A2P 10DLC brand + campaign registration before carriers will reliably deliver bot SMS. Plan for ~$15–50 in fees and a few days of approval. SMS is best treated as a *fallback* to Slack, not the primary channel.
+If you don't want to take this on trust, the dispatcher is OSS ([dispatcher/](dispatcher/)) and self-hostable, or skip it entirely with `--self-hosted` mode.
 
 ---
 
 ## What it isn't (yet)
 
-I'd rather tell you upfront than have you find out later:
-
-- **No persistence.** Restart the server, you lose in-flight approvals. v0.1 cut.
-- **Single-user.** One shared auth token, one `to_number`. Multi-user comes later.
-- **No webhook signature verification.** Add it before exposing the server publicly.
-- **No mid-flight instructions.** Approve, reject, or kill — but you can't say *"actually, regenerate the fixtures first"* to a running session. Kill and restart is the v0.1 escape hatch.
-- **Claude Code only.** No Codex CLI, no Aider. The architecture is mostly runtime-agnostic, but the hook script and spawn logic are Claude-specific.
+- **No persistence.** Server restart loses in-flight approvals.
+- **Single-user-per-install.** Multi-user routing comes later.
+- **Slack only.** No Discord, no SMS, no Teams — yet.
+- **Claude Code only.** No Codex, no Aider — yet.
 
 ---
 
 ## Roadmap
 
-Honest priority order, not a wishlist:
+Honest priority order:
 
-1. Slack + Twilio webhook signature verification
-2. SQLite persistence (survive restarts)
-3. Multi-user (per-user tokens and routing)
-4. Codex CLI support — when someone asks for it
-5. Mid-flight instructions (would need cooperation from the agent runtime)
+1. SQLite persistence (survive restarts cleanly)
+2. MCP layer — second install path: paste a URL into Claude Code config, advisory-mode approvals (loses enforcement, gains zero-friction trial)
+3. Multi-user (per-user routing within one install)
+4. More agent runtimes (Codex, Aider) — when asked
+5. More messaging adapters (Discord, Teams) — when asked
 
 ---
 

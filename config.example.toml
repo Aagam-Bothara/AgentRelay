@@ -1,27 +1,21 @@
-# AgentRelay configuration. Copy to config.toml and fill in.
-# The server reads this file from $AGENTRELAY_CONFIG (defaults to ./config.toml).
+# AgentRelay configuration. `agentrelay init` creates this file for you;
+# this is just a reference for what it looks like or for manual edits.
 
-# Public URL of this server (Slack/Twilio webhooks must hit this URL).
-public_url = "https://YOUR-APP.fly.dev"
+# Public URL where Slack will reach this server. For ephemeral testing
+# this is your Cloudflare quick-tunnel URL; for production it's your
+# Fly.io / Render / Railway hostname.
+public_url = "https://YOUR-TUNNEL.trycloudflare.com"
 
-# Shared auth token for the hook -> server call. Anything random.
-# Set the same value as AGENTRELAY_TOKEN in the spawned claude env.
+# Shared secret for the hook → server call. `agentrelay init` generates one.
 auth_token = "change-me"
 
-# Where claude should run if /v1/start doesn't specify a project_dir.
+# Where claude should run by default if /v1/start doesn't specify.
 default_project_dir = "/absolute/path/to/your/project"
 
 # Approval flow timing.
-approval_timeout_seconds   = 600  # block claude this long max waiting for human
-sms_fallback_seconds       = 90   # send SMS if no slack response after this
-stall_threshold_seconds    = 240  # alert if session has no hook activity this long
+approval_timeout_seconds = 600  # block claude this long max waiting for human
+stall_threshold_seconds  = 240  # alert if a session has no hook activity this long
 
 [slack]
 bot_token = "xoxb-..."     # Bot User OAuth Token (chat:write, commands)
 channel   = "C0123456789"  # default channel ID for messages
-
-[sms]
-account_sid = "AC..."           # Twilio Account SID
-auth_token  = "..."             # Twilio Auth Token
-from_number = "+15555550123"    # your Twilio number
-to_number   = "+15555550199"    # your phone (single-user MVP)

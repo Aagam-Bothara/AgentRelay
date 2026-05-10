@@ -5,12 +5,17 @@ Reads the tool call JSON from stdin, asks the relay server for approval,
 and emits Claude Code's hook decision JSON.
 
 Environment:
-  AGENTRELAY_URL      base URL of the relay (e.g. https://app.fly.dev)
+  AGENTRELAY_URL      base URL of the relay (default: http://127.0.0.1:8000)
   AGENTRELAY_TOKEN    shared auth token (optional)
-  AGENTRELAY_SESSION  relay's session id (set by the server when it spawned claude)
+  AGENTRELAY_SESSION  relay's session id (only set when the server itself
+                      spawned claude via /v1/start; the VS Code extension
+                      and direct `claude` invocations don't set this)
 
-If the server is unreachable or no AGENTRELAY_SESSION is set, the hook
-fails open (approves) so it never wedges your terminal.
+If neither AGENTRELAY_SESSION nor a session_id from Claude Code's hook
+payload is available, the hook fails open. Otherwise the server uses
+Claude Code's session_id and auto-creates a session on first contact —
+this is what lets AgentRelay work with the VS Code extension and
+ad-hoc CLI use, not just server-spawned sessions.
 """
 from __future__ import annotations
 import json
@@ -42,12 +47,16 @@ def main() -> None:
         emit("approve", "could not parse hook input")
         return
 
-    url = os.environ.get("AGENTRELAY_URL")
-    session_id = os.environ.get("AGENTRELAY_SESSION")
+    url = os.environ.get("AGENTRELAY_URL", "http://127.0.0.1:8000")
+    # Prefer the env var (server-spawned mode) but fall back to Claude Code's
+    # own session_id from the hook payload, which is set in BOTH the CLI and
+    # the VS Code extension. That's what makes extension-launched sessions
+    # supervisable.
+    session_id = os.environ.get("AGENTRELAY_SESSION") or payload.get("session_id")
     token = os.environ.get("AGENTRELAY_TOKEN", "")
 
-    if not url or not session_id:
-        emit("approve", "agentrelay not configured")
+    if not session_id:
+        emit("approve", "agentrelay: no session id available")
         return
 
     body = json.dumps(
@@ -55,6 +64,7 @@ def main() -> None:
             "session_id": session_id,
             "tool_name": payload.get("tool_name"),
             "tool_input": payload.get("tool_input", {}),
+            "cwd": payload.get("cwd") or os.getcwd(),
         }
     ).encode()
 
