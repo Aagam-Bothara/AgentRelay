@@ -1,0 +1,49 @@
+# systemd unit for running AgentRelay on an always-on machine (Raspberry Pi,
+# home server, mini-PC, VPS). Drop into /etc/systemd/system/agentrelay.service
+# and edit the placeholders, then:
+#
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now agentrelay.service
+#   systemctl status agentrelay.service
+#
+# Logs:  journalctl -u agentrelay.service -f
+
+[Unit]
+Description=AgentRelay — async supervision for autonomous coding agents
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# REPLACE with the user the agent runs as. This user must have:
+#   - the `agentrelay` and `claude` CLIs on PATH (or absolute paths below)
+#   - credentials already set up (i.e. `agentrelay login` was run interactively
+#     once as this user before enabling the service)
+User=REPLACE_WITH_USERNAME
+Group=REPLACE_WITH_USERNAME
+
+# REPLACE with the directory containing your project (where Claude Code will run).
+WorkingDirectory=/home/REPLACE_WITH_USERNAME/projects
+
+# Adjust if `agentrelay` is at a non-standard path (e.g. inside a venv or pipx
+# install). Find it with `which agentrelay`.
+ExecStart=/usr/local/bin/agentrelay run
+
+Restart=on-failure
+RestartSec=10
+
+# Always-on boxes don't need keep-awake (they're already always-on), so we
+# omit --keep-awake here. If running on a laptop that's plugged in but
+# closed-lid, add: ExecStart=/usr/local/bin/agentrelay run --keep-awake
+
+# Resource limits — server is small, but bound it just in case.
+MemoryHigh=256M
+MemoryMax=512M
+
+# Logs go to journald by default; uncomment to redirect to a file instead:
+# StandardOutput=append:/var/log/agentrelay.log
+# StandardError=append:/var/log/agentrelay.log
+
+[Install]
+WantedBy=multi-user.target

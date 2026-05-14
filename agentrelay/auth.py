@@ -20,7 +20,10 @@ import httpx
 from .keychain import Credentials, save
 
 
-DEFAULT_DISPATCHER_URL = "https://agentrelay-dispatcher.workers.dev"
+# Default dispatcher URL — point this at your own Cloudflare Worker
+# deployment if you self-host (see dispatcher/README.md). Users can also
+# override per-invocation with `agentrelay login --dispatcher <url>`.
+DEFAULT_DISPATCHER_URL = "https://agentrelay-dispatcher.mweeb19.workers.dev"
 POLL_TIMEOUT_SECONDS = 600  # 10 minutes — generous for users who walk away
 POLL_INTERVAL_SECONDS = 2.0
 

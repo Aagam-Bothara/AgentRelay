@@ -12,21 +12,23 @@ It's a Claude Code hook plus a tiny relay that sends risky actions to your phone
 
 ---
 
-## Install in 3 commands
+## Install — fully seamless
 
 ```bash
 pipx install agentrelay
-agentrelay login          # browser opens → "Add to Slack" → done
-agentrelay run            # starts local server, connects to dispatcher
+agentrelay login              # browser opens → "Add to Slack" → done
+agentrelay wire-hook --global # one-time: enables AgentRelay for every Claude Code session on this machine
+agentrelay install-service    # one-time: runs `agentrelay run` automatically at every login
+agentrelay run                # start it once now; from next reboot it auto-starts
 ```
 
-Then in any project you want supervised:
+That's it. No tunnel. No Slack app to create. No `config.toml`. No per-project setup. Every Claude Code session — CLI, VS Code extension, JetBrains plugin — goes through AgentRelay supervision until you uninstall.
 
+Anytime you want to verify it's actually working:
 ```bash
-agentrelay wire-hook .
+agentrelay status
 ```
-
-That's it. No tunnel setup. No Slack app to create. No `config.toml` to edit.
+Shows login state, server reachability, dispatcher health, hook wiring, auto-startup status, and recent hook activity — all in one table.
 
 > **What `login` does:** opens your browser to AgentRelay's hosted dispatcher, walks you through Slack's "Add to Workspace" page, comes back with a bot token + install secret stored in your OS keychain. Your laptop is now connected to the dispatcher via an outbound websocket — no public URL on your side needed.
 
@@ -86,14 +88,56 @@ The whole trick: **the hook makes a long-poll HTTP call that doesn't return unti
 ## CLI reference
 
 ```bash
-agentrelay login                 # Slack OAuth → store creds in keychain
+agentrelay login                 # Slack OAuth → store creds in OS keychain
 agentrelay logout                # clear stored creds
-agentrelay run                   # default: dispatcher mode
+agentrelay run                   # default: dispatcher mode (background-friendly)
 agentrelay run --self-hosted     # v0.2-style: config.toml + cloudflared
-agentrelay wire-hook <project>   # add the PreToolUse hook to a project
+agentrelay status                # diagnose what's wired up, what isn't, and why
+agentrelay wire-hook <project>   # add the PreToolUse hook to a single project
+agentrelay wire-hook --global    # add the hook to ~/.claude/settings.json — applies everywhere
+agentrelay install-service       # auto-start `agentrelay run` at every login
+agentrelay uninstall-service     # undo the above
 agentrelay init                  # [self-hosted] interactive setup wizard
-agentrelay rewire-slack          # [self-hosted] regenerate manifest after tunnel restart
+agentrelay rewire-slack          # [self-hosted] regenerate Slack manifest after tunnel restart
 ```
+
+### Keeping Claude Code running when your laptop sleeps
+
+By default, when your laptop closes/sleeps the OS suspends every process — including AgentRelay and any active Claude Code session. Two ways around it depending on how long you want supervision to last:
+
+**Short away-from-keyboard (minutes to hours):** start the server with `--keep-awake`:
+
+```bash
+agentrelay run --keep-awake
+```
+
+While that's running, the OS won't idle-sleep your machine (the display still sleeps to save power; only the system stays awake). Stop the server → normal sleep behavior returns. Backends:
+
+- Windows: `SetThreadExecutionState(ES_SYSTEM_REQUIRED)`
+- macOS: `caffeinate -i`
+- Linux: `systemd-inhibit`
+
+**Long away-from-keyboard / overnight / production:** run AgentRelay on a machine that's always on — a home server, Raspberry Pi, mini-PC, or a cheap VPS. Your laptop becomes one of many devices that can *see* the supervised agent via Slack, but isn't the thing running it.
+
+Pattern:
+
+1. On the always-on box: install AgentRelay + Claude Code, run `agentrelay login` + `agentrelay install-service`. Server boots at every reboot.
+2. Sync your code to that box — git remote, syncthing, or rsync on demand. (The agent operates on whatever files live on that machine.)
+3. Trigger sessions from your phone via Slack DM, just like before.
+4. Your laptop can be off, in your bag, or in another country.
+
+A `deploy/agentrelay.service` template is included for systemd-based Linux servers (most VPS hosts, Raspberry Pi OS, Ubuntu). Drop it into `/etc/systemd/system/`, edit the user/paths, and `systemctl enable --now agentrelay.service`.
+
+### Debugging the hook
+
+If something isn't supervising and you suspect the hook isn't firing:
+
+```bash
+$env:AGENTRELAY_DEBUG = "1"     # PowerShell
+export AGENTRELAY_DEBUG=1       # bash/zsh
+```
+
+The hook will append a line to `~/.agentrelay/hook.log` on every invocation, including which Claude Code surface fired it and the resolved session_id. `agentrelay status` shows the most recent entries.
 
 ---
 

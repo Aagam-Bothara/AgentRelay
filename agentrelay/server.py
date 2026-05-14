@@ -252,29 +252,62 @@ def spawn_claude(session_id: str, task: str, project_dir: str) -> subprocess.Pop
     )
 
 
-def write_session_settings(project_dir: str) -> None:
-    """Write a project-local .claude/settings.local.json that wires the hook."""
+def _hook_block() -> dict:
+    """The PreToolUse hook block we install — referenced by both
+    write_session_settings (project-local) and the wire-hook --global flow."""
     repo_root = Path(__file__).parent.parent
     hook_path = (repo_root / "hook.py").resolve()
+    return {
+        "matcher": "Bash|Write|Edit",
+        "hooks": [
+            {
+                "type": "command",
+                "command": f'"{sys.executable}" "{hook_path}"',
+            }
+        ],
+    }
+
+
+def write_session_settings(project_dir: str) -> None:
+    """Write a project-local .claude/settings.local.json that wires the hook."""
     settings_dir = Path(project_dir) / ".claude"
     settings_dir.mkdir(exist_ok=True)
     settings_path = settings_dir / "settings.local.json"
-    settings = {
-        "hooks": {
-            "PreToolUse": [
-                {
-                    "matcher": "Bash|Write|Edit",
-                    "hooks": [
-                        {
-                            "type": "command",
-                            "command": f'"{sys.executable}" "{hook_path}"',
-                        }
-                    ],
-                }
-            ]
-        }
-    }
+    settings = {"hooks": {"PreToolUse": [_hook_block()]}}
     settings_path.write_text(json.dumps(settings, indent=2))
+
+
+def write_global_settings() -> Path:
+    """Merge our hook into ~/.claude/settings.json so it fires for every
+    Claude Code session on this machine, regardless of project or IDE.
+
+    Preserves any existing user-level hooks/settings — we only append our
+    matcher if it isn't already there.
+    """
+    settings_path = Path.home() / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+
+    existing: dict = {}
+    if settings_path.exists():
+        try:
+            existing = json.loads(settings_path.read_text())
+        except Exception:
+            existing = {}
+
+    existing.setdefault("hooks", {})
+    pre = existing["hooks"].setdefault("PreToolUse", [])
+
+    block = _hook_block()
+    block_cmd = block["hooks"][0]["command"]
+    already = any(
+        any(h.get("command") == block_cmd for h in m.get("hooks", []))
+        for m in pre
+    )
+    if not already:
+        pre.append(block)
+
+    settings_path.write_text(json.dumps(existing, indent=2))
+    return settings_path
 
 
 async def reap_session(session_id: str) -> None:
