@@ -205,7 +205,9 @@ async function handleOAuthPoll(req: Request, env: Env): Promise<Response> {
 // POST /slack/interactive
 // Slack delivers button clicks here as application/x-www-form-urlencoded with
 // a `payload` field containing the JSON. We extract the install_id from the
-// button value, look up its DO, and forward.
+// button value, look up its DO, forward to it, AND update the original Slack
+// message in-place so the user gets immediate visual confirmation that their
+// tap was registered.
 async function handleSlackInteractive(req: Request, env: Env): Promise<Response> {
   const body = await req.text();
   if (!(await verifySlackSignature(req, body, env.SLACK_SIGNING_SECRET))) {
@@ -224,6 +226,9 @@ async function handleSlackInteractive(req: Request, env: Env): Promise<Response>
   }
   if (payload.type !== "block_actions") return json({ ok: true });
 
+  const responseUrl: string | undefined = payload.response_url;
+  const userId: string = payload.user?.id || "";
+
   for (const action of payload.actions || []) {
     // Button value format: `<install_id>:<approval_id>:<decision>`
     const value: string = action.value || "";
@@ -237,13 +242,66 @@ async function handleSlackInteractive(req: Request, env: Env): Promise<Response>
       type: "approval",
       approval_id,
       decision,
-      user_id: payload.user?.id || "",
+      user_id: userId,
     };
     // Fire-and-forget; DO internally writes to its websocket if connected.
     await stub.fetch("https://do/forward", {
       method: "POST",
       body: JSON.stringify(fwd),
     });
+
+    // Update the Slack message so the user sees immediate feedback. We
+    // preserve the original section block (task/command details) but replace
+    // the actions block with a "decided" line. This works because Slack
+    // includes the original message in interactivity payloads.
+    if (responseUrl) {
+      const verb = decision === "approve" ? "Approved" : "Rejected";
+      const emoji = decision === "approve" ? ":white_check_mark:" : ":x:";
+      const ts = Math.floor(Date.now() / 1000);
+
+      // Try to preserve the original section block so users can still see
+      // *what* was approved. We strip only the actions (buttons) block.
+      const originalBlocks: any[] = payload.message?.blocks || [];
+      const sectionBlocks = originalBlocks.filter(
+        (b: any) => b.type !== "actions",
+      );
+      const decisionBlock = {
+        type: "context",
+        elements: [
+          {
+            type: "mrkdwn",
+            text: `${emoji} *${verb}* by <@${userId}> · <!date^${ts}^{time}|just now>`,
+          },
+        ],
+      };
+
+      const updatedBody = {
+        replace_original: "true",
+        blocks: [...sectionBlocks, decisionBlock],
+        text: `${verb} by <@${userId}>`,
+      };
+
+      // Await the response_url POST. Cloudflare Workers' runtime aggressively
+      // terminates pending I/O once the main handler returns, so a naive
+      // fire-and-forget here gets cancelled before Slack receives the update.
+      // We accept the extra ~200ms latency to keep the visual confirmation
+      // reliable. If the POST fails (e.g. Slack 4xx), we log it but still
+      // return ok — the agent-side decision was already recorded.
+      try {
+        const upResp = await fetch(responseUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(updatedBody),
+        });
+        if (!upResp.ok) {
+          console.error(
+            `response_url update failed: ${upResp.status} ${await upResp.text()}`,
+          );
+        }
+      } catch (e) {
+        console.error(`response_url update threw: ${e}`);
+      }
+    }
   }
 
   return json({ ok: true });
