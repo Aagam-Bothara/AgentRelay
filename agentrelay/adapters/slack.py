@@ -84,7 +84,7 @@ class SlackAdapter:
             f"{emoji} *{risk} risk* — approve?\n"
             f"*Task:* {_truncate(task, 200)}\n"
             f"*Session:* `{session_id}` · {project}\n"
-            f"*Why:* {reason}\n"
+            f"*What:* {reason}\n"
             f"```\n{shown}\n```"
         )
         if self.install_id:

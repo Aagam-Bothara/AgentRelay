@@ -12,25 +12,37 @@ It's a Claude Code hook plus a tiny relay that sends risky actions to your phone
 
 ---
 
-## Install — fully seamless
+## Install — one line, never touch again
 
 ```bash
-pipx install agentrelay
-agentrelay login              # browser opens → "Add to Slack" → done
-agentrelay wire-hook --global # one-time: enables AgentRelay for every Claude Code session on this machine
-agentrelay install-service    # one-time: runs `agentrelay run` automatically at every login
-agentrelay run                # start it once now; from next reboot it auto-starts
+pipx install agentrelay && agentrelay
 ```
 
-That's it. No tunnel. No Slack app to create. No `config.toml`. No per-project setup. Every Claude Code session — CLI, VS Code extension, JetBrains plugin — goes through AgentRelay supervision until you uninstall.
+That's it. The second command auto-detects that you've never set it up and runs the full install wizard:
 
-Anytime you want to verify it's actually working:
+1. Opens your browser → click "Add to Slack" → that's the only thing you do
+2. Installs the hook globally so every Claude Code session goes through it
+3. Registers AgentRelay to auto-start on every login
+4. Starts the server right now, in the background
+
+You can close the terminal afterward. AgentRelay keeps running, keeps supervising, survives reboots. You will never have to run another setup command. Every Claude Code session — CLI, VS Code extension, JetBrains plugin — is now supervised on your phone.
+
+If you want to run setup explicitly (e.g. on a server, in a script):
+
+```bash
+agentrelay setup
+```
+
+Same chain, same idempotent behavior — safe to re-run.
+
+Want to check it's still working?
+
 ```bash
 agentrelay status
 ```
-Shows login state, server reachability, dispatcher health, hook wiring, auto-startup status, and recent hook activity — all in one table.
+Shows login state, server reachability, dispatcher health, hook wiring, auto-startup, and recent hook activity in one table.
 
-> **What `login` does:** opens your browser to AgentRelay's hosted dispatcher, walks you through Slack's "Add to Workspace" page, comes back with a bot token + install secret stored in your OS keychain. Your laptop is now connected to the dispatcher via an outbound websocket — no public URL on your side needed.
+> **What the wizard actually does under the hood:** opens your browser to AgentRelay's hosted dispatcher, walks you through Slack's "Add to Workspace" page, stores the bot token + install secret in your OS keychain, merges a hook into `~/.claude/settings.json`, installs a platform-appropriate auto-start service, and detached-spawns the local server. Your laptop is connected to the dispatcher via an outbound websocket — no public URL on your side needed.
 
 ---
 
@@ -88,18 +100,22 @@ The whole trick: **the hook makes a long-poll HTTP call that doesn't return unti
 ## CLI reference
 
 ```bash
-agentrelay login                 # Slack OAuth → store creds in OS keychain
-agentrelay logout                # clear stored creds
-agentrelay run                   # default: dispatcher mode (background-friendly)
-agentrelay run --self-hosted     # v0.2-style: config.toml + cloudflared
-agentrelay status                # diagnose what's wired up, what isn't, and why
-agentrelay wire-hook <project>   # add the PreToolUse hook to a single project
-agentrelay wire-hook --global    # add the hook to ~/.claude/settings.json — applies everywhere
-agentrelay install-service       # auto-start `agentrelay run` at every login
-agentrelay uninstall-service     # undo the above
-agentrelay init                  # [self-hosted] interactive setup wizard
+agentrelay                       # first run: full setup; later: shows help
+agentrelay setup                 # explicit one-shot install (idempotent — safe to re-run)
+agentrelay status                # diagnose every layer of the install in one table
+agentrelay run                   # start the server manually (already auto-started, normally)
+agentrelay run --keep-awake      # also prevent OS sleep while running
+agentrelay logout                # clear stored credentials
+agentrelay login                 # individual: only sign in (subset of setup)
+agentrelay wire-hook --global    # individual: only install global hook
+agentrelay wire-hook <project>   # individual: install hook per-project only
+agentrelay install-service       # individual: only register auto-startup
+agentrelay uninstall-service     # remove the auto-startup registration
+agentrelay init                  # [self-hosted] interactive cloudflared+manifest wizard
 agentrelay rewire-slack          # [self-hosted] regenerate Slack manifest after tunnel restart
 ```
+
+`setup` chains `login` + `wire-hook --global` + `install-service` + a detached `run`. Use the individual commands only if you want fine-grained control or are scripting the install.
 
 ### Keeping Claude Code running when your laptop sleeps
 

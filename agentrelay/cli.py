@@ -21,9 +21,52 @@ from rich.console import Console
 console = Console()
 app = typer.Typer(
     help="AgentRelay — supervise your coding agent from your phone.",
-    no_args_is_help=True,
+    no_args_is_help=False,
     add_completion=False,
 )
+
+
+@app.callback(invoke_without_command=True)
+def _root(ctx: typer.Context) -> None:
+    """If the user types just `agentrelay` with no subcommand:
+      - First run (no credentials) → auto-launch the setup wizard.
+      - Already configured → print help (the existing behavior).
+    """
+    if ctx.invoked_subcommand is not None:
+        return  # a subcommand was given; let it run
+
+    from .keychain import load
+    from .setup import run_setup
+
+    if load() is None:
+        console.print(
+            "[dim]No AgentRelay credentials found — launching first-time setup.[/dim]\n"
+        )
+        code = run_setup()
+        if code != 0:
+            raise typer.Exit(code=code)
+        return
+    # Already configured — show help like the old no-args behavior.
+    typer.echo(ctx.get_help())
+
+
+@app.command()
+def setup(
+    dispatcher: Optional[str] = typer.Option(
+        None,
+        help="Override the dispatcher URL (defaults to the hosted instance).",
+    ),
+) -> None:
+    """One-shot install: login + global hook + auto-startup + start server.
+
+    Runs the same chain as `agentrelay` with no arguments on a fresh machine.
+    Safe to re-run — already-completed steps are detected and skipped.
+    """
+    from .setup import run_setup
+
+    code = run_setup(dispatcher=dispatcher)
+    if code != 0:
+        raise typer.Exit(code=code)
 
 
 @app.command()
